@@ -1,15 +1,15 @@
 import requests
 
-ip_lists = ['server1']
+server_list = [
+    'http://alce:8080/',
+    'http://baleia:8080/',
+    'http://camelo:8080/',
+    'http://doninha:8080/'
+]
 
 dict_to_send = {'value': 5}
-response = requests.post('http://server1:8080/', json = dict_to_send)
 
-print('response: ' + response.text)
-
-response = requests.post('http://server2:8080/', json = dict_to_send)
-
-print('response: ' + response.text)
-
-while True:
-    pass
+for server_url in server_list:
+    print('send post to: ' + server_url)
+    response = requests.post(server_url, json = dict_to_send)
+    print('response: ' + response.text)

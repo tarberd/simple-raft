@@ -1,11 +1,17 @@
 version: '3'
 services:
-  server1:
+  alce:
     build: ./server
-  server2:
+  baleia:
+    build: ./server
+  camelo:
+    build: ./server
+  doninha:
     build: ./server
   client:
     build: ./client
     depends_on:
-      - server1
-      - server2
+      - alce
+      - baleia
+      - camelo
+      - doninha
