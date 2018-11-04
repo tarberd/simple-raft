@@ -4,14 +4,3 @@ services:
     build: ./server
   baleia:
     build: ./server
-  camelo:
-    build: ./server
-  doninha:
-    build: ./server
-  client:
-    build: ./client
-    depends_on:
-      - alce
-      - baleia
-      - camelo
-      - doninha
