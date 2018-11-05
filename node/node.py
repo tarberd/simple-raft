@@ -2,10 +2,6 @@ import socket, sys, time, asyncio, json, random
 
 class Timeout:
     @staticmethod
-    def heartbeat():
-        return random.randint(150, 300)/1000
-    
-    @staticmethod
     def election():
         return random.randint(150, 300)/1000
 
@@ -43,10 +39,6 @@ class Message:
     def from_json(msg):
         decoded = json.loads(msg)
         return Message(decoded["type"], decoded["data"])
-
-    @staticmethod
-    def heartbeat():
-        return Message('heartbeat')
     
     @staticmethod
     def request_vote(term_num):
@@ -83,7 +75,7 @@ class Node:
         self.other_nodes = list(self.other_nodes)
         self.name = all_nodes_dict[self.ip]
         self.state = State.FOLLOWER
-        self.election_timer = self.get_election_timer()
+        self.election_timer = 0
         self.election_term = ElectionTerm(self.all_nodes)
 
     async def request(self, message, host, port=5555):
@@ -113,6 +105,10 @@ class Node:
         writer.write(msg.to_json().encode())
         await writer.drain()
     
+    async def broadcast(self, msg):
+        for other in self.other_nodes:
+            await self.request(msg, other)
+    
     async def become_candidate(self):
         print("Becoming candidate")
         self.state = State.CANDIDATE
@@ -124,34 +120,30 @@ class Node:
         await self.broadcast(vote_req)
         print("Became candidate")
 
-    def get_election_timer(self):
+    def new_election_timer(self):
         return Timer(Timeout.election(), self.become_candidate)
 
     def reset_election_timer(self):
         print("Resetting election timer")
         self.election_timer.cancel()
-        self.election_timer = self.get_election_timer()
-
+        self.election_timer = self.new_election_timer()
 
     async def handler(self, reader, writer):
         msg = await Node.get_message(reader)
 
         if self.state == State.FOLLOWER:
-            if msg.type == 'heartbeat':
-                print("got heartbeat")
-                self.reset_election_timer()
-            elif msg.type == 'request_vote':
+            if msg.type == 'request_vote':
                 print("got request_vote")
-                term_num = msg.data["term_num"]
+                
+                sender_term_num = msg.data["term_num"]
 
-                self.election_term = ElectionTerm(term_num)
-                # self.election_term.vote()
-                to_send = Message.grant_vote(term_num)
+                self.election_term = ElectionTerm(sender_term_num)
+
+                to_send = Message.grant_vote(sender_term_num)
                 await Node.send_message(to_send, writer)
             else:
                 print("outra coisa", msg.type)
         
-
         to_send = Message('response')
         await Node.send_message(to_send, writer)
         writer.close()
@@ -159,19 +151,11 @@ class Node:
     async def loop(self):
         while True:
             if self.state == State.LEADER:
-                await asyncio.sleep(Timeout.heartbeat())
-                await self.broadcast(Message.heartbeat())
+                pass
             elif self.state == State.FOLLOWER:
-
                 pass
             elif self.state == State.CANDIDATE:
                 pass
-            else:
-                pass
-
-    async def broadcast(self, msg):
-        for other in self.other_nodes:
-            await self.request(Message.heartbeat(), other)
 
     def run(self):
         loop = asyncio.get_event_loop()
@@ -180,16 +164,17 @@ class Node:
 
         loop.run_forever()
 
+       
+
 
 
 server_hostname_list = ['alce', 'baleia']
 
-
 node = Node(server_hostname_list)
+
 print('I am:', node.name)
 print('I am at:', node.ip)
 
-
-print(node.other_nodes)
+print('Other nodes:', node.other_nodes)
 
 node.run()
