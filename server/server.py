@@ -35,16 +35,25 @@ print('I am at:', my_ip_address)
 
 del server_ip_to_hostname[my_ip_address]
 
-#  print('start')
-#  while True:
-#      their soc  = 0
-#      start_new_thread(connect_to, ())
-#
-#      connection, address = sock.accept()
-#      print('connected to: ' + address[0] + ':' + str(address[1]))
-#
-#      start_new_thread(serve, (connection,))
-#      start_new_thread(receive, (connection,))
+other_nodes_ips = []
+
+for ip, hostname in server_ip_to_hostname.items():
+    other_nodes_ips.append(ip)
+
+print(other_nodes_ips)
+
+async def tcp_echo_client(message, host, port):
+    reader, writer = await asyncio.open_connection(host, port)
+
+    print(f'Send: {message!r}')
+    writer.write(message.encode())
+
+    data = await reader.read(100)
+    print(f'Received: {data.decode()!r}')
+
+    print('Close the connection')
+    writer.close()
+    await writer.wait_closed()
 
 async def handle_echo(reader, writer):
     data = await reader.read(100)
@@ -70,3 +79,4 @@ async def main():
         await server.serve_forever()
 
 asyncio.run(main())
+asyncio.run(tcp_echo_client('hy',other_nodes_ips[0],5555))
