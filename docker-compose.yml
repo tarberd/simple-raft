@@ -1,6 +1,6 @@
 version: '3'
 services:
   alce:
-    build: ./server
+    build: ./node
   baleia:
-    build: ./server
+    build: ./node
