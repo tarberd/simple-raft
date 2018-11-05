@@ -1,5 +1,31 @@
 import socket, sys, time, asyncio, json, random
 
+class Timeout:
+    @staticmethod
+    def heartbeat():
+        return random.randint(150, 300)/1000
+    
+    @staticmethod
+    def election():
+        return random.randint(150, 300)/1000
+
+
+class Timer:
+    def __init__(self, timeout, callback):
+        self._timeout = timeout
+        self._callback = callback
+        self._task = asyncio.ensure_future(self._job())
+
+    async def _job(self):
+        print("begin job, sleep:", self._timeout)
+        await asyncio.sleep(self._timeout)
+        print("after sleep")
+        await self._callback()
+        print("after callback")
+
+    def cancel(self):
+        self._task.cancel()
+
 class State:
     FOLLOWER = 1
     CANDIDATE = 2
@@ -21,16 +47,44 @@ class Message:
     @staticmethod
     def heartbeat():
         return Message('heartbeat')
+    
+    @staticmethod
+    def request_vote(term_num):
+        return Message('request_vote', {'term_num': term_num})
+
+    @staticmethod
+    def grant_vote(term_num):
+        return Message('grant_vote', {'term_num': term_num})
+
+class ElectionTerm:
+    total = 0
+    def __init__(self, candidates):
+        self.number = ElectionTerm.total
+        ElectionTerm.total += 1
+        self.candidates = candidates
+        self.candidates_to_vote_count = {candidate: 0 for candidate in candidates}
+    
+    def vote(self, candidate):
+        self.candidates_to_vote_count[candidate] +=1
+    
+    def vote_count(self, candidate):
+        return self.candidates_to_vote_count[candidate]
+    
+    def elected(self):
+        return max(self.candidates_to_vote_count, key=self.candidates_to_vote_count.get)
 
 class Node:
     def __init__(self, nodes_names):
-        all_nodes = {socket.gethostbyname(name): name for name in nodes_names}
-        self.other_nodes = all_nodes.copy()
+        all_nodes_dict = {socket.gethostbyname(name): name for name in nodes_names}
+        self.all_nodes = list(all_nodes_dict)
+        self.other_nodes = all_nodes_dict.copy()
         self.ip = socket.gethostbyname(socket.gethostname())
         del self.other_nodes[self.ip]
         self.other_nodes = list(self.other_nodes)
-        self.name = all_nodes[self.ip]
+        self.name = all_nodes_dict[self.ip]
         self.state = State.FOLLOWER
+        self.election_timer = self.get_election_timer()
+        self.election_term = ElectionTerm(self.all_nodes)
 
     async def request(self, message, host, port=5555):
         while True:
@@ -51,37 +105,78 @@ class Node:
     async def get_message(reader):
         data = await reader.read(100)
         msg = Message.from_json(data.decode())
+        print('peername',reader.get_extra_info('peername'))
         return msg
 
     @staticmethod
     async def send_message(msg, writer):
         writer.write(msg.to_json().encode())
         await writer.drain()
+    
+    async def become_candidate(self):
+        print("Becoming candidate")
+        self.state = State.CANDIDATE
+        self.election_term = ElectionTerm(self.all_nodes)
+        self.election_term.vote(self.ip)
+
+        print("Requesting votes")
+        vote_req = Message.request_vote(self.election_term.number)
+        await self.broadcast(vote_req)
+        print("Became candidate")
+
+    def get_election_timer(self):
+        return Timer(Timeout.election(), self.become_candidate)
+
+    def reset_election_timer(self):
+        print("Resetting election timer")
+        self.election_timer.cancel()
+        self.election_timer = self.get_election_timer()
+
 
     async def handler(self, reader, writer):
         msg = await Node.get_message(reader)
 
-        if msg.type == 'heartbeat':
-            print("HEARTBEAT CRL")
-        else:
-            print("outra coisa", msg.type)
+        if self.state == State.FOLLOWER:
+            if msg.type == 'heartbeat':
+                print("got heartbeat")
+                self.reset_election_timer()
+            elif msg.type == 'request_vote':
+                print("got request_vote")
+                term_num = msg.data["term_num"]
+
+                self.election_term = ElectionTerm(term_num)
+                # self.election_term.vote()
+                to_send = Message.grant_vote(term_num)
+                await Node.send_message(to_send, writer)
+            else:
+                print("outra coisa", msg.type)
+        
 
         to_send = Message('response')
         await Node.send_message(to_send, writer)
         writer.close()
 
-    async def tick(self):
-        def tick_sleep():
-            return random.randint(150, 450)/1000
+    async def loop(self):
         while True:
-            await asyncio.sleep(tick_sleep())
-            for other in self.other_nodes:
-                await self.request(Message.heartbeat(), other)
+            if self.state == State.LEADER:
+                await asyncio.sleep(Timeout.heartbeat())
+                await self.broadcast(Message.heartbeat())
+            elif self.state == State.FOLLOWER:
+
+                pass
+            elif self.state == State.CANDIDATE:
+                pass
+            else:
+                pass
+
+    async def broadcast(self, msg):
+        for other in self.other_nodes:
+            await self.request(Message.heartbeat(), other)
 
     def run(self):
         loop = asyncio.get_event_loop()
         loop.create_task(asyncio.start_server(self.handler, '0.0.0.0', 5555))
-        loop.create_task(self.tick())
+        loop.create_task(self.loop())
 
         loop.run_forever()
 
