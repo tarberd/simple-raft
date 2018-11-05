@@ -3,24 +3,9 @@ import socket, sys, time, asyncio, json, random
 class Timeout:
     @staticmethod
     def election():
+        if socket.gethostbyname(socket.gethostname()) == '172.19.0.3':
+            return 2
         return random.randint(150, 300)/1000
-
-
-class Timer:
-    def __init__(self, timeout, callback):
-        self._timeout = timeout
-        self._callback = callback
-        self._task = asyncio.ensure_future(self._job())
-
-    async def _job(self):
-        print("begin job, sleep:", self._timeout)
-        await asyncio.sleep(self._timeout)
-        print("after sleep")
-        await self._callback()
-        print("after callback")
-
-    def cancel(self):
-        self._task.cancel()
 
 class State:
     FOLLOWER = 1
@@ -45,19 +30,22 @@ class Message:
         return Message('request_vote', {'term_num': term_num})
 
     @staticmethod
-    def grant_vote(term_num):
-        return Message('grant_vote', {'term_num': term_num})
+    def vote(term_num, candidate):
+        return Message('vote', {'term_num': term_num, 'candidate': candidate})
+    
+    def __str__(self):
+        return f"type: {self.type} | data:{self.data}"
 
 class ElectionTerm:
-    total = 0
-    def __init__(self, candidates):
-        self.number = ElectionTerm.total
-        ElectionTerm.total += 1
+    def __init__(self, candidates, number):
+        self.number = number
         self.candidates = candidates
         self.candidates_to_vote_count = {candidate: 0 for candidate in candidates}
     
     def vote(self, candidate):
+        print(candidate, candidate in self.candidates_to_vote_count ,self.candidates_to_vote_count)
         self.candidates_to_vote_count[candidate] +=1
+        print(self.candidates_to_vote_count)
     
     def vote_count(self, candidate):
         return self.candidates_to_vote_count[candidate]
@@ -75,10 +63,10 @@ class Node:
         self.other_nodes = list(self.other_nodes)
         self.name = all_nodes_dict[self.ip]
         self.state = State.FOLLOWER
-        self.election_timer = 0
-        self.election_term = ElectionTerm(self.all_nodes)
+        self.election_term = ElectionTerm(self.all_nodes, 0)
 
     async def request(self, message, host, port=5555):
+        print("requesting msg:", message)
         while True:
             try:
                 reader, writer = await asyncio.open_connection(host, port)
@@ -88,17 +76,20 @@ class Node:
 
         await Node.send_message(message, writer)
 
-        message = await Node.get_message(reader)
+        response, _ = await Node.get_message(reader, writer)
         writer.close()
         await writer.wait_closed()
-        return message
+        return response
 
     @staticmethod
-    async def get_message(reader):
-        data = await reader.read(100)
-        msg = Message.from_json(data.decode())
-        print('peername',reader.get_extra_info('peername'))
-        return msg
+    async def get_message(reader, writer):
+        data = await reader.read(1024)
+        decoded = data.decode()
+        if decoded != '':
+            msg = Message.from_json(decoded)
+            ip = writer.get_extra_info('peername')[0]
+            return (msg, ip)
+        return (None, None)
 
     @staticmethod
     async def send_message(msg, writer):
@@ -110,9 +101,11 @@ class Node:
             await self.request(msg, other)
     
     async def become_candidate(self):
+        await asyncio.sleep(Timeout.election())
+
         print("Becoming candidate")
         self.state = State.CANDIDATE
-        self.election_term = ElectionTerm(self.all_nodes)
+        self.election_term = ElectionTerm(self.all_nodes, self.election_term.number+1)
         self.election_term.vote(self.ip)
 
         print("Requesting votes")
@@ -120,47 +113,47 @@ class Node:
         await self.broadcast(vote_req)
         print("Became candidate")
 
-    def new_election_timer(self):
-        return Timer(Timeout.election(), self.become_candidate)
-
-    def reset_election_timer(self):
-        print("Resetting election timer")
-        self.election_timer.cancel()
-        self.election_timer = self.new_election_timer()
-
     async def handler(self, reader, writer):
-        msg = await Node.get_message(reader)
+        msg, remote_ip = await Node.get_message(reader, writer)
+        if msg == None:
+            return
+        print(msg)
+        if self.state == State.CANDIDATE:
+            print("i am candidate, msg:", msg)
+            if msg.type == 'vote':
+                voted_candidate = msg.data["candidate"]
+                self.election_term.vote(voted_candidate)
+            elif msg.type == 'request_vote':
+                sender_term_num = msg.data["term_num"]
+                to_send = Message.vote(sender_term_num, self.ip)
+                await self.request(to_send, remote_ip)
 
-        if self.state == State.FOLLOWER:
+        elif self.state == State.FOLLOWER:
+            print("i am follower, msg:", msg)
             if msg.type == 'request_vote':
+                self.election_task.cancel()
                 print("got request_vote")
                 
                 sender_term_num = msg.data["term_num"]
 
-                self.election_term = ElectionTerm(sender_term_num)
+                self.election_term = ElectionTerm(self.all_nodes, sender_term_num)
+                self.election_term.vote(remote_ip) # follower vote
+                self.election_term.vote(remote_ip) # candidate's vote
 
-                to_send = Message.grant_vote(sender_term_num)
-                await Node.send_message(to_send, writer)
+
+                to_send = Message.vote(sender_term_num, remote_ip)
+                await self.request(to_send, remote_ip)
+                print("sent msg", to_send)
+            elif msg.type == 'heartbeat':
+                self.election_task.cancel()
             else:
                 print("outra coisa", msg.type)
-        
-        to_send = Message('response')
-        await Node.send_message(to_send, writer)
         writer.close()
-
-    async def loop(self):
-        while True:
-            if self.state == State.LEADER:
-                pass
-            elif self.state == State.FOLLOWER:
-                pass
-            elif self.state == State.CANDIDATE:
-                pass
 
     def run(self):
         loop = asyncio.get_event_loop()
         loop.create_task(asyncio.start_server(self.handler, '0.0.0.0', 5555))
-        loop.create_task(self.loop())
+        self.election_task = loop.create_task(self.become_candidate())
 
         loop.run_forever()
 
